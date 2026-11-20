@@ -22,7 +22,7 @@ async function requestTicket(
   apiBaseUrl: string,
 ): Promise<string> {
   const headers: Record<string, string> = {};
-  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  if (accessToken) headers['X-Session-Token'] = accessToken;
   const response = await fetch(
     `${apiBaseUrl.replace(/\/+$/, '')}/api/v1/session/${encodeURIComponent(sessionId)}/websocket-ticket`,
     { method: 'POST', headers },
@@ -50,6 +50,8 @@ export class SessionWebSocketClient {
     apiBaseUrl = RuntimeEndpointConfig.apiBaseUrl(),
     private readonly provideTicket: TicketProvider = (sessionId, token) =>
       requestTicket(sessionId, token, apiBaseUrl),
+    /** An unattended station never gives up: pass Infinity so only the backoff cap limits retries. */
+    private readonly maxReconnectAttempts = MAX_RECONNECT_ATTEMPTS,
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
@@ -125,7 +127,7 @@ export class SessionWebSocketClient {
   }
 
   private scheduleReconnect(sessionId: string, accessToken: string | null): void {
-    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       this.handlers.onStatusChange('disconnected');
       return;
     }

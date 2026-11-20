@@ -1,14 +1,59 @@
 /** Resolves local-development and packaged-station endpoints in one place. */
 export class RuntimeEndpointConfig {
+  static isCloudMode(): boolean {
+    return import.meta.env.VITE_HANDWASH_CLOUD_MODE?.trim().toLowerCase() === 'true'
+      || window.__HANDWASH_CONFIG__?.cloudMode === true;
+  }
+
+  /** ADMIN signs in with the Java backend's own accounts (backend on the Windows PC) instead of Cognito. */
+  static isLocalAdminLogin(): boolean {
+    return import.meta.env.VITE_ADMIN_LOGIN?.trim().toLowerCase() === 'local'
+      || window.__HANDWASH_CONFIG__?.adminLogin === 'local';
+  }
+
+  static cognitoConfig(): { domain: string; clientId: string; redirectUri: string } {
+    const runtime = window.__HANDWASH_CONFIG__;
+    return {
+      domain: import.meta.env.VITE_COGNITO_DOMAIN?.trim() || runtime?.cognitoDomain?.trim() || '',
+      clientId: import.meta.env.VITE_COGNITO_CLIENT_ID?.trim() || runtime?.cognitoClientId?.trim() || '',
+      redirectUri: import.meta.env.VITE_COGNITO_REDIRECT_URI?.trim()
+        || runtime?.cognitoRedirectUri?.trim() || '',
+    };
+  }
+
+  /** Operators sign in through their own Cognito pool (no MFA); empty until that pool is configured. */
+  static operatorCognitoConfig(): { domain: string; clientId: string; redirectUri: string; operatorPool: true } {
+    const runtime = window.__HANDWASH_CONFIG__;
+    return {
+      domain: import.meta.env.VITE_OPERATOR_COGNITO_DOMAIN?.trim() || runtime?.operatorCognitoDomain?.trim() || '',
+      clientId: import.meta.env.VITE_OPERATOR_COGNITO_CLIENT_ID?.trim()
+        || runtime?.operatorCognitoClientId?.trim() || '',
+      redirectUri: this.cognitoConfig().redirectUri,
+      operatorPool: true,
+    };
+  }
+
+  /** Friction steps (1-6) the pilot still labels "En evaluación" on the kiosk; informational, Java decides. */
+  static stepsInEvaluation(): number[] {
+    const raw = import.meta.env.VITE_STEPS_IN_EVALUATION?.trim() ?? '';
+    const steps = raw.split(',').map((part) => part.trim())
+      .filter((part) => /^[1-6]$/.test(part)).map(Number);
+    return [...new Set(steps)];
+  }
+
   static apiBaseUrl(): string {
     const configured = import.meta.env.VITE_API_URL?.trim();
     if (configured) return this.withoutTrailingSlash(configured);
+    const runtimeEndpoint = window.__HANDWASH_CONFIG__?.apiBaseUrl?.trim();
+    if (runtimeEndpoint) return this.withoutTrailingSlash(runtimeEndpoint);
     return import.meta.env.DEV ? 'http://127.0.0.1:8080' : window.location.origin;
   }
 
   static websocketBaseUrl(): string {
     const configured = import.meta.env.VITE_WS_URL?.trim();
     if (configured) return this.withoutTrailingSlash(configured);
+    const runtimeEndpoint = window.__HANDWASH_CONFIG__?.websocketBaseUrl?.trim();
+    if (runtimeEndpoint) return this.withoutTrailingSlash(runtimeEndpoint);
     if (import.meta.env.DEV) return 'ws://127.0.0.1:8080';
 
     const endpoint = new URL(this.apiBaseUrl(), window.location.origin);
@@ -18,7 +63,8 @@ export class RuntimeEndpointConfig {
 
   static cameraStreamUrl(): string {
     const configured = import.meta.env.VITE_CAMERA_STREAM_URL?.trim();
-    return this.withoutTrailingSlash(configured || 'http://127.0.0.1:8091/video.mjpg');
+    const runtimeEndpoint = window.__HANDWASH_CONFIG__?.cameraStreamUrl?.trim();
+    return this.withoutTrailingSlash(configured || runtimeEndpoint || 'http://127.0.0.1:8091/video.mjpg');
   }
 
   private static withoutTrailingSlash(value: string): string {
