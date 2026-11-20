@@ -11,6 +11,12 @@ node_modules
 dist
 dist-ssr
 *.local
+.env*
+!.env.example
+.vercel
+.agents/
+.impeccable/questions/
+.impeccable/review/
 
 # Editor directories and files
 .vscode/*

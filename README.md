@@ -1,76 +1,46 @@
-# HandWash AI — Frontend
+# HandWash cloud frontend
 
-Dashboard React/TypeScript para observar en tiempo real una sesión de lavado de manos en la Mac. Muestra el video MJPEG, el estado de conexión, los pasos, las infracciones y el resumen que entrega el backend Java.
+React 18, TypeScript, Vite and Zustand. This repository contains the web client only; Java/Spring and PostgreSQL remain separate services.
 
-## Alcance
+## Roles and service boundaries
 
-- Crea una sesión como propietario o permite unirse con código como dashboard de solo lectura (`VIEWER`).
-- Consume la API REST y los mensajes WebSocket del backend.
-- Muestra el stream MJPEG del proceso local de cámara/YOLO, vinculado al `sessionId` activo.
-- Presenta el modo de despliegue informado por el backend.
+- The public root is a fixed kiosk: no human login, role badge or ADMIN link. A one-time ADMIN-issued enrollment code registers the station.
+- `/#/admin` is an unlisted route for Cognito ADMIN access with required MFA. Each fresh sign-in clears the prior Cognito Hosted UI session first. HandWash keeps access tokens in memory only; `sessionStorage` holds only the short-lived PKCE transaction. Microsoft Authenticator can provide the TOTP factor, but it is not a standalone Cognito login method. Hiding the route is not an authorization control; Spring Boot protects every admin API.
+- Cognito may retain its own browser cookie until logout/expiration. The app clears it before every new ADMIN sign-in and on explicit sign-out; it does not persist an application login token across reloads.
+- Vercel `/api/station/*` acts as a same-origin BFF. Station and session capabilities stay in `Secure`, `HttpOnly`, `SameSite=Strict` cookies and are never returned to browser JavaScript.
+- Only an enrolled station can create a cloud session. Java remains authoritative for authorization, sequence, timing, infractions and summaries.
+- The deployed backend currently reports `DEVELOPMENT` with `clinicalDecisionAllowed=false`.
+- Continuity preview is local until the enrolled station and RTX producer establish WebRTC. The signaling/WebRTC client is deployed, but no PC is connected yet; YOLO inference is therefore unavailable.
+- No photo or video is persisted or uploaded.
 
-El frontend no captura video, no ejecuta YOLO y no calcula reglas ni resultados. El backend Java es la fuente de verdad de los pasos, tiempos e infracciones. La cámara y el productor YOLO corren en la Mac y envían sus detecciones al backend.
+## Local development
 
-## Stack
-
-- React 18.3 y TypeScript.
-- Vite 6 para desarrollo y build.
-- Zustand para estado de sesión y conexión.
-- Tailwind CSS 4 y Lucide React para la interfaz.
-- Vitest y Testing Library para pruebas.
-
-## Requisitos y ejecución
-
-Se requiere Node.js y npm. Desde la raíz de este repositorio:
-
-```bash
+```sh
 npm ci
-cp .env.example .env.local  # opcional: editar destinos locales
 npm run dev
+npm test
+npm run build
+npm run lint
 ```
 
-Vite sirve el dashboard en `http://127.0.0.1:5173`. Para la operación local también deben estar activos:
+Copy `.env.example` to `.env.local` for local development. Never commit `.env.local` or Cognito secrets. `VITE_COGNITO_CLIENT_ID` is a public SPA client identifier; the producer client secret must never be placed in this repository or Vercel frontend variables.
 
-- Backend Java en `http://127.0.0.1:8080`.
-- Productor YOLO/cámara de la Mac, con stream MJPEG en `http://127.0.0.1:8091/video.mjpg` y estado de cámara en `/health`.
+## Vercel environment
 
-El dashboard solo solicita el stream cuando hay una sesión activa y verifica que su `sessionId` coincida con el del productor.
+Set these variables in the Vercel project. The first group is public/build-time configuration; the BFF origin values are server-only:
 
-## Variables de entorno
-
-Los valores de `.env.example` son direcciones públicas que Vite incorpora al frontend; no guardes secretos ni tokens en ellas.
-
-| Variable | Valor local por defecto | Uso |
-|---|---|---|
-| `VITE_API_URL` | `http://127.0.0.1:8080` en desarrollo; mismo origen en build | Base de la API REST. |
-| `VITE_WS_URL` | `ws://127.0.0.1:8080` en desarrollo; derivado del origen de API en build | Base WebSocket (`ws`/`wss`). |
-| `VITE_CAMERA_STREAM_URL` | `http://127.0.0.1:8091/video.mjpg` | Stream MJPEG del productor local. |
-
-`VITE_API_URL`, `VITE_WS_URL` y `VITE_CAMERA_STREAM_URL` permiten apuntar a otros destinos. Sin configuración, el frontend usa los valores locales anteriores; en un build, API y WebSocket se derivan del origen publicado, mientras que la cámara conserva el destino local salvo que se configure.
-
-## Flujo con el backend
-
-1. El propietario crea una sesión con `POST /api/v1/session`; el dashboard recibe el código de emparejamiento y credencial.
-2. Otro dashboard puede unirse con el código mediante `POST /api/v1/auth/dashboard-login` y obtiene acceso de solo lectura.
-3. `SessionWebSocketClient` solicita un ticket de un solo uso a `POST /api/v1/session/{sessionId}/websocket-ticket` y conecta a `/ws/{sessionId}`.
-4. El productor YOLO envía las detecciones a Java. El frontend recibe por WebSocket el progreso y los resultados; no procesa detecciones.
-
-## Estructura
-
-- `src/App.tsx`: composición del dashboard.
-- `src/components/`: controles de sesión, video, pasos, conexión, infracciones, estado de despliegue y resumen.
-- `src/hooks/`: ciclo de sesión y conexión WebSocket.
-- `src/lib/`: configuración de endpoints, cliente WebSocket y mapeo de mensajes.
-- `src/stores/`: estado compartido de sesión y conexión con Zustand.
-- `src/types/`: contratos y tipos del dashboard.
-- `src/test/`: pruebas de componentes, stores y clientes.
-
-## Comandos
-
-```bash
-npm run dev      # servidor Vite
-npm run build    # TypeScript y build de producción
-npm run lint     # ESLint
-npm run test     # Vitest en modo ejecución única
-npm run preview  # vista local del build
+```text
+VITE_HANDWASH_CLOUD_MODE=true
+VITE_API_URL=https://d2pp4cum59aa17.cloudfront.net
+VITE_COGNITO_DOMAIN=<deployed Cognito hosted-login domain>
+VITE_COGNITO_CLIENT_ID=<public SPA client ID>
+VITE_COGNITO_REDIRECT_URI=https://frontend-proyecto-handwash.vercel.app/
+HANDWASH_BACKEND_ORIGIN=https://d2pp4cum59aa17.cloudfront.net
+HANDWASH_PUBLIC_ORIGIN=https://frontend-proyecto-handwash.vercel.app
 ```
+
+Production has the exact Vercel origin in Java REST/WebSocket CORS and the BFF rejects mutations from any other origin. Preview domains are intentionally not allowed. ADMIN/MFA login has not yet been exercised end to end.
+
+ADMIN issues an enrollment code under **Puestos registrados**. It expires after 10 minutes and is single-use. The station redeems it once; daily use is just **Iniciar detección**. If revoked, the station must be enrolled again.
+
+The RTX producer uses a separate machine credential and the v2 contract. This browser app does not receive its client secret or a session token for the producer. Production Vercel includes direct WebRTC signaling/client code and aggregate producer telemetry, but the station is not enrolled and no live RTX connection has been verified. No photo is saved; Java receives JSON only, never video.
