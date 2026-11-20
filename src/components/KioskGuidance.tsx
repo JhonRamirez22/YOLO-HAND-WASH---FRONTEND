@@ -2,11 +2,13 @@ import { useEffect, useRef } from 'react';
 import { Check, X } from 'lucide-react';
 import { KioskChime } from '@/lib/KioskChime';
 import { formatSeconds, kioskGuideText, showsStepProgress } from '@/lib/KioskGuideCatalog';
+import { StepIllustration } from '@/components/illustrations/StepIllustration';
 import type { FrictionEvaluation } from '@/types';
 
 const RADIUS = 46;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 const chime = new KioskChime();
+const ILLUSTRATED = new Set(['INICIA_CON_PALMAS', 'CONTINUA_PASO', 'CAMBIA_A_PASO', 'VUELVE_A_PASO', 'SIGUE_EL_ORDEN', 'MANTEN_EL_MOVIMIENTO']);
 
 /** One instruction chosen by Java, plus the credited time of the movement it refers to. */
 export function KioskGuidance({ evaluation }: { evaluation: FrictionEvaluation }) {
@@ -15,6 +17,7 @@ export function KioskGuidance({ evaluation }: { evaluation: FrictionEvaluation }
   const step = guide.paso ? evaluation.pasos.find((item) => item.paso === guide.paso) : undefined;
   const progress = showsStepProgress(guide.codigo) && step
     ? Math.min(1, step.tiempoAcreditadoMs / step.minimoRequeridoMs) : null;
+  const movement = guide.paso && ILLUSTRATED.has(guide.codigo) ? Number(/PASO_(\d)/.exec(guide.paso)?.[1] ?? 0) : 0;
   const announced = useRef(`${evaluation.numeroIntento}:${guide.codigo}:${guide.paso}`);
 
   useEffect(() => {
@@ -42,6 +45,7 @@ export function KioskGuidance({ evaluation }: { evaluation: FrictionEvaluation }
       ) : guide.codigo === 'LAVADO_INCOMPLETO' ? (
         <span className="kiosk-guidance-badge is-alert" aria-hidden="true"><X size={34} strokeWidth={2.5} /></span>
       ) : null}
+      {movement >= 1 && movement <= 6 && <div className="kiosk-guidance-figure"><StepIllustration step={movement} /></div>}
       <div className="kiosk-guidance-copy">
         <strong>{text.title}</strong>
         <span>{text.detail}</span>
