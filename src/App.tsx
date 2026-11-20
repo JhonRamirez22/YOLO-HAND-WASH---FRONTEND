@@ -4,6 +4,7 @@ import { AdminAuditPage } from './components/AdminAuditPage';
 import { AppShell } from './components/AppShell';
 import { CloudAccessPage } from './components/CloudAccessPage';
 import { CameraPhonePage } from './components/CameraPhonePage';
+import { IllustrationGallery } from '@/dev/IllustrationGallery';
 import { LivePanel } from './components/LivePanel';
 import { KioskScreen } from './components/KioskScreen';
 import { OperatorConsole } from './components/OperatorConsole';
@@ -111,6 +112,7 @@ function App() {
       });
   }, [cloudMode]);
 
+  if (import.meta.env.DEV && route === 'illustrations') return <IllustrationGallery />;
   if (route === 'camera') return <CameraPhonePage />;
   if (route === 'panel') return <LivePanel />;
   if (cloudMode && route === 'kiosk' && !hasAuthCallback) return <KioskScreen />;
@@ -303,9 +305,10 @@ function AccessDenied({ onSignOut }: { onSignOut: () => void }) {
   );
 }
 
-type AppRoute = 'kiosk' | 'operator' | 'admin' | 'panel' | 'camera';
+type AppRoute = 'kiosk' | 'operator' | 'admin' | 'panel' | 'camera' | 'illustrations';
 
 function readRoute(): AppRoute {
+  if (import.meta.env.DEV && window.location.hash.startsWith('#/illustrations')) return 'illustrations';
   if (window.location.hash.startsWith('#/panel')) return 'panel';
   if (window.location.hash.startsWith('#/camera')) return 'camera';
   if (window.location.hash.startsWith('#/operator')) return 'operator';
