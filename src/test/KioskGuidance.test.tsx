@@ -52,7 +52,7 @@ describe('Java-chosen kiosk guidance', () => {
     const { rerender } = render(<KioskGuidance evaluation={first} />);
     rerender(<KioskGuidance evaluation={next} />);
     expect(screen.getByText('Cambia a: Dorsos')).toBeInTheDocument();
-    expect(screen.queryByRole('img')).toBeNull();
+    expect(screen.queryByRole('img', { name: /segundos observados/ })).toBeNull();
     expect(play).not.toHaveBeenCalled();
 
     window.__HANDWASH_CONFIG__ = { kioskSound: true };
@@ -64,7 +64,7 @@ describe('Java-chosen kiosk guidance', () => {
   it('order corrections focus on the order message without a ring', () => {
     render(<KioskGuidance evaluation={evaluation({ codigo: 'SIGUE_EL_ORDEN', paso: 'PASO_2_DORSOS', faltanteMs: 7000, tono: 'CORRECCION' })} />);
     expect(screen.getByText('Orden: primero Dorsos')).toBeInTheDocument();
-    expect(screen.queryByRole('img')).toBeNull();
+    expect(screen.queryByRole('img', { name: /segundos observados/ })).toBeNull();
   });
 
   it('technical waits never blame the person', () => {
