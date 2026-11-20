@@ -4,6 +4,9 @@ import { FRICTION_STEPS, STEP_LABELS, WHO_STEPS } from '@/types';
 import { formatSeconds } from '@/lib/KioskGuideCatalog';
 import { RuntimeEndpointConfig } from '@/lib/RuntimeEndpointConfig';
 import { STEP_NAMES, stepNumber, wrongStepMessage } from '@/lib/CameraFrames';
+import { ProgressMeter } from '@/components/ui/ProgressMeter';
+import { StepIllustration } from '@/components/illustrations/StepIllustration';
+import { useCountUp } from '@/motion/useCountUp';
 import type { DetectedSummary } from '@/hooks/usePreviewCanvas';
 import { KioskGuidance } from './KioskGuidance';
 import { KioskWashSummary } from './KioskWashSummary';
@@ -43,7 +46,7 @@ export function KioskProgress({ evaluating = true, detected = null }: { evaluati
       {evaluating && detected && <LiveStepLine detected={detected} credit={creditOf(evaluation?.pasos.find((item) => item.estado === 'EN_CURSO' || item.estado === 'REQUIERE_REPETICION'))} />}
       {active && evaluating && evaluation && <KioskGuidance evaluation={evaluation} />}
       {evaluation && <KioskWashSummary evaluation={evaluation} />}
-      {!(evaluation && (evaluation.estadoIntento === 'COMPLETO_PARCIAL' || evaluation.estadoIntento === 'INTERRUMPIDO')) && <ol>
+      {!(evaluation && (evaluation.estadoIntento === 'COMPLETO_PARCIAL' || evaluation.estadoIntento === 'INTERRUMPIDO')) && <ol className="hw-stagger">
         {steps.map((step, index) => {
           const assessment = evaluation?.pasos.find((item) => item.paso === step);
           const observed = assessment ? assessment.estado === 'VALIDADO' : active && currentIndex >= 0 && index < currentIndex;
@@ -62,9 +65,8 @@ export function KioskProgress({ evaluating = true, detected = null }: { evaluati
                 {observed && <small>{assessment ? 'Validado' : 'Observado'}{typeof assessment?.calidadPct === 'number' ? ` · calidad ${assessment.calidadPct} %` : ''} · Java</small>}
                 {assessment && assessment.estado !== 'PENDIENTE' && <>
                   <small>{formatSeconds(assessment.tiempoAcreditadoMs)} / {assessment.minimoRequeridoMs / 1000} s observados</small>
-                  <span className="kiosk-step-meter" aria-hidden="true">
-                    <span style={{ width: `${Math.min(100, Math.round(100 * assessment.tiempoAcreditadoMs / Math.max(1, assessment.minimoRequeridoMs)))}%` }} />
-                  </span>
+                  <ProgressMeter label={`Progreso de ${STEP_LABELS[step] ?? step}`}
+                    value={100 * assessment.tiempoAcreditadoMs / Math.max(1, assessment.minimoRequeridoMs)} />
                 </>}
               </span>
             </li>
@@ -91,23 +93,29 @@ export function creditOf(assessment: { paso: string; tiempoAcreditadoMs: number;
 
 export function LiveStepLine({ detected, credit }: { detected: DetectedSummary; credit: Credit | null }) {
   const seen = stepNumber(detected.step);
+  // The movement to do now: the one Java is crediting, else the one the camera sees, else the one that is due.
+  const shown = detected.error ? null : (credit?.step ?? seen ?? (detected.expected > 0 ? detected.expected : null));
+  const percent = useCountUp(credit?.percent ?? 0, { from: credit?.percent ?? 0, durationMs: 380 });
   const next = detected.expected > 0 ? `Paso ${detected.expected} · ${STEP_NAMES[detected.expected - 1]}` : 'Lavado completo';
   return (
-    <div className={`kiosk-live-step${detected.error ? ' is-error' : seen ? ' is-seen' : ''}`} role="status">
-      <span className="kiosk-live-step-now">
+    <div className={`kiosk-live-step${detected.error ? ' is-error' : seen ? ' is-seen' : ''}${shown ? ' has-illustration' : ''}`} role="status">
+      {shown && <figure className="kiosk-live-step-figure"><StepIllustration step={shown} animate={!detected.error} /></figure>}
+      <div className="kiosk-live-step-body">
+      <span className="kiosk-live-step-now hw-swap" key={`${detected.error}-${seen}-${detected.hands > 0}`}>
         {detected.error ? wrongStepMessage(seen, detected.expected)
           : seen ? `Detectando: Paso ${seen} · ${STEP_NAMES[seen - 1]}${detected.confidence !== null ? ` (${Math.round(detected.confidence * 100)} %)` : ''}`
             : detected.hands > 0 ? 'Manos detectadas; esperando un paso' : 'Sin manos a la vista'}
       </span>
       {credit && !detected.error && <span className="kiosk-live-step-credit">
-        <strong>{credit.percent} %</strong> del Paso {credit.step} · {STEP_NAMES[credit.step - 1]} ({credit.seconds.toFixed(1)} / {credit.required.toFixed(0)} s)
-        <span className="kiosk-step-meter big" aria-hidden="true"><span style={{ width: `${credit.percent}%` }} /></span>
+        <strong>{percent} %</strong> del Paso {credit.step} · {STEP_NAMES[credit.step - 1]} ({credit.seconds.toFixed(1)} / {credit.required.toFixed(0)} s)
+        <ProgressMeter className="big" label={`Progreso del Paso ${credit.step}`} value={credit.percent} />
       </span>}
       {credit && credit.percent >= 100 && detected.expected > 0 && !detected.error && (
-        <span className="kiosk-live-step-done">✓ Paso {credit.step} listo: ya puedes pasar al Paso {Math.min(6, credit.step + 1)} · {STEP_NAMES[Math.min(5, credit.step)]}</span>
+        <span className="kiosk-live-step-done hw-pop" key={credit.step}><svg className="hw-check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5" /></svg> Paso {credit.step} listo: ya puedes pasar al Paso {Math.min(6, credit.step + 1)} · {STEP_NAMES[Math.min(5, credit.step)]}</span>
       )}
       <span className="kiosk-live-step-next">Sigue: {next}</span>
-      <span className="kiosk-live-step-bar" aria-hidden="true"><span style={{ width: `${Math.round(100 * detected.current / 6)}%` }} /></span>
+      <ProgressMeter className="total" label="Avance del lavado" value={100 * detected.current / 6} />
+          </div>
     </div>
   );
 }
