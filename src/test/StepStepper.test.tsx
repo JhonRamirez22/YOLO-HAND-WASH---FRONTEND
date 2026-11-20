@@ -27,16 +27,18 @@ describe('StepStepper', () => {
       coberturaJabonCompleta: false,
       estadoIntencion: 'NO_EVALUADA',
       motivoIntencion: '',
+      cameraHandsVisible: null,
       manosVisiblesIntencion: 0,
       tiempoConfirmacionIntencionMs: 0,
       umbralConfirmacionIntencionMs: 0,
       claseCandidata: '',
       confianzaCandidata: null,
+      secuenciaFriccionObservadaCompleta: false,
       summary: null,
     })
   })
 
-  it('renders the seven friction movements without presenting them as the full WHO protocol', () => {
+  it('renders the six supported friction movements without presenting them as the full WHO protocol', () => {
     renderStepper()
     expect(screen.getByText('Movimientos de fricción')).toBeInTheDocument()
     expect(screen.getByText('Palmas')).toBeInTheDocument()
@@ -45,7 +47,7 @@ describe('StepStepper', () => {
     expect(screen.getByText('Nudillos')).toBeInTheDocument()
     expect(screen.getByText('Pulgar')).toBeInTheDocument()
     expect(screen.getByText('Punta de dedos')).toBeInTheDocument()
-    expect(screen.getByText('Circulares')).toBeInTheDocument()
+    expect(screen.queryByText('Circulares')).not.toBeInTheDocument()
     expect(screen.getByText(/no verifica el procedimiento completo de la OMS/i)).toBeInTheDocument()
   })
 
@@ -70,7 +72,7 @@ describe('StepStepper', () => {
     })
     renderStepper()
     expect(screen.queryByText('Inicie una sesion para ver el progreso')).not.toBeInTheDocument()
-    expect(screen.getAllByRole('img', { name: /progreso informativo, sin aprobación clínica/ })).toHaveLength(7)
+    expect(screen.getAllByRole('img', { name: /progreso informativo, sin aprobación clínica/ })).toHaveLength(6)
     expect(screen.queryByRole('img', { name: /clínicamente validado/ })).not.toBeInTheDocument()
   })
 
@@ -98,7 +100,7 @@ describe('StepStepper', () => {
 
     expect(screen.getByRole('img', { name: /Palmas: registrado como progreso informativo/ })).toBeInTheDocument()
     expect(screen.getByRole('img', { name: 'Punta de dedos: con infracción' })).toBeInTheDocument()
-    expect(screen.getAllByRole('img', { name: /progreso informativo, sin aprobación clínica/ })).toHaveLength(6)
+    expect(screen.getAllByRole('img', { name: /progreso informativo, sin aprobación clínica/ })).toHaveLength(5)
   })
 
   it('downgrades a backend approval to informational progress in a non-clinical deployment', () => {
@@ -118,7 +120,7 @@ describe('StepStepper', () => {
 
     renderStepper()
 
-    expect(screen.getAllByRole('img', { name: /progreso informativo, sin aprobación clínica/ })).toHaveLength(7)
+    expect(screen.getAllByRole('img', { name: /progreso informativo, sin aprobación clínica/ })).toHaveLength(6)
     expect(screen.queryByRole('img', { name: /clínicamente validado/ })).not.toBeInTheDocument()
   })
 
@@ -165,9 +167,42 @@ describe('StepStepper', () => {
     renderStepper()
     expect(screen.getByText('Intención: Manos visibles; confirma la fricción inicial de palmas.')).toBeInTheDocument()
     expect(screen.getByText('Motivo: Se necesita evidencia reciente de ambas manos en el encuadre.')).toBeInTheDocument()
-    expect(screen.getByText('Manos para intención: 1/2')).toBeInTheDocument()
+    expect(screen.getByText('YOLO local (último sondeo): sin dato')).toBeInTheDocument()
+    expect(screen.getByText('Evidencia recibida por Java: 1/2')).toBeInTheDocument()
     expect(screen.getByText('Confirmación: 0/1200 ms')).toBeInTheDocument()
     expect(screen.getByText('Candidato: Palmas (82 %)')).toBeInTheDocument()
+  })
+
+  it('marks a six-movement friction sequence as informational, never as a completed OMS wash', () => {
+    useSessionStore.setState({
+      isActive: true,
+      modoEvaluacion: 'FRICCION_PARCIAL',
+      currentStep: 'PASO_6_PUNTA_DE_DEDOS',
+      secuenciaFriccionObservadaCompleta: true,
+    })
+
+    renderStepper()
+
+    expect(screen.getByText(/se observaron los seis movimientos de fricción/i)).toBeInTheDocument()
+    expect(screen.getByRole('img', {
+      name: /Punta de dedos: registrado como progreso informativo, sin aprobación clínica/i,
+    })).toBeInTheDocument()
+    expect(screen.queryByText('Circulares')).not.toBeInTheDocument()
+  })
+
+  it('distinguishes two hands seen locally by YOLO from missing Java evidence', () => {
+    useSessionStore.setState({
+      isActive: true,
+      modoEvaluacion: 'FRICCION_PARCIAL',
+      cameraHandsVisible: 2,
+      estadoIntencion: 'MANOS_PRESENTES',
+      manosVisiblesIntencion: 0,
+    })
+
+    renderStepper()
+
+    expect(screen.getByText('YOLO local (último sondeo): 2/2')).toBeInTheDocument()
+    expect(screen.getByText('Evidencia recibida por Java: 0/2')).toBeInTheDocument()
   })
 
   it('translates the current spatial-evidence rejection without asking for stronger rubbing', () => {

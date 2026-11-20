@@ -17,6 +17,32 @@ class FakeSocket {
 describe('SessionWebSocketClient', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('sends the opaque session capability in its dedicated header when requesting a ticket', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ ticket: 'one-use-ticket-value-12345678901234567890' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const sockets: FakeSocket[] = [];
+    const client = new SessionWebSocketClient({
+      onMessage: vi.fn(), onStatusChange: vi.fn(), onConnected: vi.fn(),
+      onReconnectAttempt: vi.fn(), isSessionActive: () => true,
+    }, (url) => {
+      const socket = new FakeSocket(url);
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    }, 'ws://127.0.0.1:8080', 'http://127.0.0.1:8080');
+
+    client.connect('session-1', 'opaque-session-capability');
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/v1/session/session-1/websocket-ticket',
+      expect.objectContaining({ headers: { 'X-Session-Token': 'opaque-session-capability' } }),
+    );
   });
 
   it('uses a one-use ticket instead of the long-lived token and ignores stale socket events', async () => {
@@ -84,5 +110,32 @@ describe('SessionWebSocketClient', () => {
     client.disconnect();
     vi.advanceTimersByTime(30_000);
     expect(sockets).toHaveLength(2);
+  });
+
+  it('keeps retrying beyond the default limit when the station is unattended', async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const onReconnectAttempt = vi.fn();
+    const client = new SessionWebSocketClient({
+      onMessage: vi.fn(), onStatusChange: vi.fn(), onConnected: vi.fn(), onReconnectAttempt,
+      isSessionActive: () => true,
+    }, (url) => {
+      const socket = new FakeSocket(url);
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    }, 'ws://localhost:8080', 'http://localhost:8080', async () => 'fresh-ticket-value-12345678901234567890',
+    Number.POSITIVE_INFINITY);
+
+    client.connect('session-1');
+    for (let cycle = 0; cycle < 14; cycle += 1) {
+      await Promise.resolve();
+      await Promise.resolve();
+      sockets.at(-1)!.onclose?.({} as CloseEvent);
+      vi.advanceTimersByTime(30_000);
+    }
+
+    expect(sockets.length, 'the default client gives up after ten retries').toBeGreaterThan(12);
+    expect(onReconnectAttempt.mock.calls.length).toBeGreaterThan(10);
+    client.disconnect();
   });
 });

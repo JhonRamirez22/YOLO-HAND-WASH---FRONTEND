@@ -3,23 +3,109 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LiveCameraFeed } from '../components/LiveCameraFeed'
 import { useSessionStore } from '../stores/sessionStore'
 
+const connect = vi.fn();
+vi.mock('../hooks/useWebSocket', () => ({
+  useWebSocket: () => ({ connect, disconnect: vi.fn() }),
+}));
+
 describe('LiveCameraFeed session binding', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
   })
 
   beforeEach(() => {
+    connect.mockClear();
     useSessionStore.getState().endSession()
   })
 
   it('does not display an unpaired camera stream when no dashboard session is active', () => {
     render(<LiveCameraFeed />)
 
-    expect(screen.getByText('Inicia o vincula una sesión')).toBeInTheDocument()
+    expect(screen.getByText('Enlaza el iPhone para comenzar')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Enlazar iPhone' })).toBeEnabled()
     expect(screen.queryByRole('img', {
       name: 'Video en vivo de las manos con las detecciones del modelo YOLO superpuestas',
     })).not.toBeInTheDocument()
+  })
+
+  it('shows local preview separately from an active WebRTC producer link', async () => {
+    vi.stubEnv('VITE_HANDWASH_CLOUD_MODE', 'true');
+    const toggleCamera = vi.fn().mockResolvedValue(true);
+    render(<LiveCameraFeed browserStream={null} onToggleBrowserCamera={toggleCamera} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enlazar iPhone' }));
+
+    expect(await screen.findByText('Vista previa lista. Inicia detección para enlazarla al PC RTX.')).toBeInTheDocument();
+    expect(toggleCamera).toHaveBeenCalledTimes(1);
+  });
+
+  it('links the current camera through authenticated Java without sending token in URL', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url) => ({
+      ok: true, status: 200,
+      json: async () => String(url).includes('/camera/link')
+        ? { status: 'connected', message: 'iPhone enlazado' }
+        : { camera: 'connected', sessionId: 'camera-session-1' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    useSessionStore.getState().startSession('camera-session-1', 'DOMESTICO', 'viewer-token', false);
+    render(<LiveCameraFeed />);
+    fireEvent.click(screen.getByRole('button', { name: 'Enlazar iPhone' }));
+    expect(await screen.findByText('iPhone enlazado')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/v1/session/camera-session-1/camera/link',
+      expect.objectContaining({ method: 'POST', headers: { Authorization: 'Bearer viewer-token' } }),
+    );
+  })
+
+  it('pairs without a code and ignores repeated clicks while linking', async () => {
+    let release!: (value: object) => void;
+    const pending = new Promise((resolve) => { release = resolve; });
+    const fetchMock = vi.fn().mockImplementation(async (url) => String(url).includes('/camera/link')
+      ? pending : { ok: true, json: async () => ({ camera: 'connected', sessionId: 'local-camera' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<LiveCameraFeed />);
+    const button = screen.getByRole('button', { name: 'Enlazar iPhone' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(screen.getByRole('button', { name: 'Enlazando…' })).toBeDisabled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => release({ ok: true, status: 200, json: async () => ({
+      status: 'connected', message: 'iPhone listo sin código',
+      session: { sessionId: 'local-camera', protocolo: 'DOMESTICO', role: 'VIEWER', accessToken: 'viewer' },
+    }) }));
+    expect(await screen.findByText('iPhone listo sin código')).toBeInTheDocument();
+    expect(connect).toHaveBeenCalledWith('local-camera', 'viewer');
+    expect(useSessionStore.getState().isOwner).toBe(false);
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Enlazar iPhone' })).toBeEnabled();
+  })
+
+  it('does not replace a healthy stream when linking again', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => ({ ok: true, status: 200,
+      json: async () => String(url).includes('/camera/link') ? { status: 'connected', message: 'Ya conectado' }
+        : { camera: 'connected', sessionId: 'stable-camera' },
+    })));
+    useSessionStore.getState().startSession('stable-camera', 'DOMESTICO', 'viewer', false);
+    render(<LiveCameraFeed />);
+    const image = screen.getByRole('img', { name: /Video en vivo de las manos/ });
+    fireEvent.load(image);
+    const originalSrc = (image as HTMLImageElement).src;
+    fireEvent.click(screen.getByRole('button', { name: 'Enlazar iPhone' }));
+    expect(await screen.findByText('Ya conectado')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Video en vivo de las manos/ })).toBe(image);
+    expect((image as HTMLImageElement).src).toBe(originalSrc);
+  })
+
+  it('re-enables linking after a startup failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503,
+      json: async () => ({ message: 'YOLO aún iniciando' }),
+    }));
+    render(<LiveCameraFeed />);
+    fireEvent.click(screen.getByRole('button', { name: 'Enlazar iPhone' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('YOLO aún iniciando');
+    expect(screen.getByRole('button', { name: 'Enlazar iPhone' })).toBeEnabled();
   })
 
   it('requests video for the exact session owned by the Stepper', async () => {
@@ -44,7 +130,7 @@ describe('LiveCameraFeed session binding', () => {
 
     fireEvent.error(image)
     expect(screen.getByText('No llega el video de esta sesión')).toBeInTheDocument()
-    expect(screen.getByText(/código de vinculación de esta misma sesión/i)).toBeInTheDocument()
+    expect(screen.getByText(/launcher siga activo/i)).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledWith(
       expect.objectContaining({ pathname: '/health' }),
       expect.objectContaining({ cache: 'no-store' }),
@@ -95,6 +181,30 @@ describe('LiveCameraFeed session binding', () => {
     }))
 
     expect(await screen.findByText('Estabilizando manos: 1.5/3.0 s')).toBeInTheDocument()
+    expect(useSessionStore.getState().cameraHandsVisible).toBe(2)
+  })
+
+  it('clears local hand count when health belongs to another session', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        camera: 'connected',
+        sessionId: 'different-session',
+        handPresence: {
+          handsVisible: 2,
+          warmupElapsedMs: 3000,
+          warmupRequiredMs: 3000,
+          warmupComplete: true,
+          stepsEnabled: true,
+        },
+      }),
+    }))
+    useSessionStore.getState().startSession('camera-session-1', 'DOMESTICO', 'dashboard-token')
+    render(<LiveCameraFeed />)
+
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    expect(useSessionStore.getState().cameraHandsVisible).toBeNull()
   })
 
   it('does not present the local camera gate as Java-confirmed readiness', async () => {

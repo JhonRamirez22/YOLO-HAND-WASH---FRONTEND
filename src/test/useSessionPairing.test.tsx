@@ -2,6 +2,8 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSession } from '../hooks/useSession';
 import { useSessionStore } from '../stores/sessionStore';
+import { ContinuityBrowserCameraService } from '../lib/ContinuityBrowserCameraService';
+import { stationApi } from '../lib/StationApi';
 
 const socket = vi.hoisted(() => ({ connect: vi.fn(), disconnect: vi.fn() }));
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => socket }));
@@ -16,11 +18,83 @@ function jsonResponse(body: object, status = 200): Response {
 describe('useSession pairing', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     socket.connect.mockReset();
     socket.disconnect.mockReset();
     useSessionStore.setState({ sessionId: null, accessToken: null, isOwner: false,
       protocolo: null, isActive: false });
+  });
+
+  it('creates a cloud session through the same-origin station BFF without a human token', async () => {
+    vi.stubEnv('VITE_HANDWASH_CLOUD_MODE', 'true');
+    vi.spyOn(stationApi, 'createSession').mockResolvedValue({
+      sessionId: 'cloud-session', protocolo: 'DOMESTICO',
+    });
+    const { result } = renderHook(() => useSession());
+
+    await act(async () => {
+      await result.current.start('DOMESTICO');
+    });
+
+    expect(stationApi.createSession).toHaveBeenCalledWith('DOMESTICO', expect.any(String));
+    expect(useSessionStore.getState().sessionId).toBe('cloud-session');
+    expect(useSessionStore.getState().accessToken).toBeNull();
+    expect(socket.connect).toHaveBeenCalledWith('cloud-session', null);
+  });
+
+  it('opens the cloud camera preview without creating a session or exposing a pairing code', async () => {
+    vi.stubEnv('VITE_HANDWASH_CLOUD_MODE', 'true');
+    const stream = { getTracks: vi.fn(() => []) } as unknown as MediaStream;
+    vi.spyOn(ContinuityBrowserCameraService, 'open').mockResolvedValue(stream);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useSession());
+
+    let linked: Awaited<ReturnType<typeof result.current.linkCloudCamera>> | undefined;
+    await act(async () => {
+      linked = await result.current.linkCloudCamera(new AbortController().signal);
+    });
+
+    expect(linked?.stream).toBe(stream);
+    expect(linked?.message).toContain('Vista previa local');
+    expect(useSessionStore.getState().sessionId).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(socket.connect).not.toHaveBeenCalled();
+  });
+
+  it('recovers an expired viewer through local pairing without rotating the producer', async () => {
+    useSessionStore.getState().startSession('old-camera', 'DOMESTICO', 'expired-viewer', false);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'connected', message: 'Cámara enlazada',
+        session: { sessionId: 'new-camera', protocolo: 'DOMESTICO', role: 'VIEWER', accessToken: 'new-viewer' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useSession());
+    await act(async () => {
+      expect(await result.current.linkCamera(new AbortController().signal)).toBe('Cámara enlazada');
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe(`${window.location.origin}/api/v1/camera/link`);
+    expect(useSessionStore.getState().sessionId).toBe('new-camera');
+    expect(useSessionStore.getState().isOwner).toBe(false);
+    expect(socket.connect).toHaveBeenCalledWith('new-camera', 'new-viewer');
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/auth/login'))).toBe(false);
+  });
+
+  it('does not apply a late link result to a replacement session', async () => {
+    useSessionStore.getState().startSession('first-camera', 'DOMESTICO', 'viewer', false);
+    let release!: (value: Response) => void;
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise<Response>((resolve) => { release = resolve; })));
+    const { result } = renderHook(() => useSession());
+    const request = result.current.linkCamera(new AbortController().signal);
+    await act(async () => {
+      useSessionStore.getState().startSession('second-camera', 'DOMESTICO', 'other-viewer', false);
+      release(jsonResponse({ status: 'connected', message: 'Anterior enlazado' }));
+      await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    });
+    expect(useSessionStore.getState().sessionId).toBe('second-camera');
+    expect(socket.connect).not.toHaveBeenCalled();
   });
 
   it('creates a distinct session on ambiguous discovery and returns its code', async () => {

@@ -51,6 +51,21 @@ describe('BackendMessageMapper', () => {
     }
   });
 
+  it('preserves the non-clinical six-movement completion signal from Java', () => {
+    const parsed = mapper.parse(JSON.stringify({
+      messageType: 'STATE_UPDATE',
+      modoEvaluacion: 'FRICCION_PARCIAL',
+      estadoActual: 'PASO_6_PUNTA_DE_DEDOS',
+      secuenciaFriccionObservadaCompleta: true,
+      procedimientoCompletoValidado: false,
+    }));
+
+    expect(parsed.kind).toBe('state');
+    if (parsed.kind === 'state') {
+      expect(parsed.update.frictionSequenceObservedComplete).toBe(true);
+    }
+  });
+
   it('maps canonical OMS current and candidate actions into the dashboard steps', () => {
     const parsed = mapper.parse(JSON.stringify({
       messageType: 'STATE_UPDATE',
