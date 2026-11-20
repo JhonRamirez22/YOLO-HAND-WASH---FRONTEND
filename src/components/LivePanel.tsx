@@ -7,6 +7,7 @@ import { usePreviewCanvas, type DetectedSummary } from '@/hooks/usePreviewCanvas
 import { useSessionStore } from '@/stores/sessionStore';
 import { KioskProgress } from './KioskProgress';
 import { QrImage } from './QrImage';
+import { WaterAmbience } from './ui/WaterAmbience';
 
 const operatorApi = new OperatorApi();
 const keySession = new OperatorKeySession();
@@ -183,6 +184,7 @@ export function LivePanel() {
           <div className="live-video-stage">
             <PreviewImage sessionId={active ? sessionId : null} getTicket={previewTicket} onLive={setPreviewLive} onDetected={setDetected} empty={
               <div className="live-video-empty">
+                <WaterAmbience />
                 <strong>{shiftActive ? 'Esperando la cámara del celular' : 'La cámara no está iniciada'}</strong>
                 <span>{shiftActive ? 'Escanea el código de abajo.' : 'Pulsa “Iniciar cámara”.'}</span>
               </div>} />
