@@ -64,3 +64,16 @@ describe('step finished cue and verdict', () => {
     expect(screen.getByText(/72 % de calidad promedio/)).toBeTruthy();
   });
 });
+
+describe('movement illustration beside the live step', () => {
+  it('shows the drawing of the movement being credited, and none while the wash is in error', () => {
+    const { rerender } = render(<LiveStepLine detected={{ ...base, step: 'Paso3_Interdigitales', current: 3, expected: 4 }} credit={{ step: 3, percent: 40, seconds: 2.8, required: 7 }} />);
+    expect(screen.getByRole('img', { name: /dedos entrelazados/ })).toBeTruthy();
+    rerender(<LiveStepLine detected={{ ...base, step: 'Paso5_Pulgar', error: true, current: 0, expected: 1 }} credit={null} />);
+    expect(screen.queryByRole('img')).toBeNull();
+  });
+  it('falls back to the movement that is due when nothing is credited yet', () => {
+    render(<LiveStepLine detected={{ ...base, step: null, hands: 2, current: 0, expected: 1 }} credit={null} />);
+    expect(screen.getByRole('img', { name: /Palma contra palma/ })).toBeTruthy();
+  });
+});
