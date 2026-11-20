@@ -26,16 +26,19 @@ interface SessionStore extends SessionState {
     tiempoConfirmacionIntencionMs: number;
     umbralConfirmacionIntencionMs: number;
     claseCandidata: HandWashStep | '';
-    confianzaCandidata: number | null;
+  confianzaCandidata: number | null;
+  secuenciaFriccionObservadaCompleta: boolean;
   }) => void;
   applyDetectionUpdate: (update: DetectionStateUpdate) => void;
   setRetryCount: (count: number) => void;
   setLastRetryError: (detail: string | null) => void;
+  setCameraHandsVisible: (count: number | null) => void;
   setEvaluationMode: (mode: EvaluationMode) => void;
   setSoapCoverage: (coverage: Record<string, SoapEvidence>, complete: boolean) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set) => ({
+  frictionEvaluation: null,
   sessionId: null,
   accessToken: null,
   isOwner: false,
@@ -53,14 +56,17 @@ export const useSessionStore = create<SessionStore>((set) => ({
   coberturaJabonCompleta: false,
   estadoIntencion: 'NO_EVALUADA',
   motivoIntencion: '',
+  cameraHandsVisible: null,
   manosVisiblesIntencion: 0,
   tiempoConfirmacionIntencionMs: 0,
   umbralConfirmacionIntencionMs: 0,
   claseCandidata: '',
   confianzaCandidata: null,
+  secuenciaFriccionObservadaCompleta: false,
 
   startSession: (sessionId, protocolo, accessToken = null, isOwner = true) =>
     set({
+      frictionEvaluation: null,
       sessionId,
       accessToken,
       isOwner,
@@ -78,15 +84,18 @@ export const useSessionStore = create<SessionStore>((set) => ({
       coberturaJabonCompleta: false,
       estadoIntencion: 'NO_EVALUADA',
       motivoIntencion: '',
+      cameraHandsVisible: null,
       manosVisiblesIntencion: 0,
       tiempoConfirmacionIntencionMs: 0,
       umbralConfirmacionIntencionMs: 0,
       claseCandidata: '',
       confianzaCandidata: null,
+      secuenciaFriccionObservadaCompleta: false,
     }),
 
   endSession: () =>
     set({
+      frictionEvaluation: null,
       sessionId: null,
       isActive: false,
       accessToken: null,
@@ -104,11 +113,13 @@ export const useSessionStore = create<SessionStore>((set) => ({
       coberturaJabonCompleta: false,
       estadoIntencion: 'NO_EVALUADA',
       motivoIntencion: '',
+      cameraHandsVisible: null,
       manosVisiblesIntencion: 0,
       tiempoConfirmacionIntencionMs: 0,
       umbralConfirmacionIntencionMs: 0,
       claseCandidata: '',
       confianzaCandidata: null,
+      secuenciaFriccionObservadaCompleta: false,
     }),
 
   setCurrentStep: (step) =>
@@ -122,6 +133,11 @@ export const useSessionStore = create<SessionStore>((set) => ({
   })),
 
   applyDetectionUpdate: (update) => set((state) => {
+    if (update.sessionId && update.sessionId !== state.sessionId) return state;
+    const incoming = update.frictionEvaluation;
+    const previous = state.frictionEvaluation;
+    if (previous && (!incoming || incoming.revisionEstado <= previous.revisionEstado
+      || incoming.numeroIntento < previous.numeroIntento)) return state;
     const startsAttempt = update.currentStep === 'PASO_1_PALMAS'
       || update.currentStep === 'OMS_01_MOJAR_MANOS';
     const clear = update.waitingForStart || (startsAttempt && state.currentStep === '');
@@ -129,6 +145,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
     if (update.infraction) infractions = appendUniqueInfraction(infractions, update.infraction);
 
     return {
+      ...(incoming ? { frictionEvaluation: incoming } : {}),
       ...(clear ? {
         currentStep: '', previousStep: '', elapsedSeconds: 0,
       } : {}),
@@ -153,17 +170,22 @@ export const useSessionStore = create<SessionStore>((set) => ({
       confianzaCandidata: update.candidateConfidence,
       ...(update.retryCount === null ? {} : { intentosReiniciados: update.retryCount }),
       ...(update.lastRetryError ? { ultimoErrorReinicio: update.lastRetryError } : {}),
+      secuenciaFriccionObservadaCompleta: update.waitingForStart
+        ? false
+        : update.frictionSequenceObservedComplete ?? state.secuenciaFriccionObservadaCompleta,
     };
   }),
 
   setSummary: (summary) => set({ summary }),
   finishSession: (summary) => set({
+    frictionEvaluation: null,
     summary,
     sessionId: null,
     accessToken: null,
     isOwner: false,
     protocolo: null,
     isActive: false,
+    cameraHandsVisible: null,
     ...(summary.modoEvaluacion ? { modoEvaluacion: summary.modoEvaluacion } : {}),
     ...(summary.coberturaJabon ? {
       coberturaJabon: summary.coberturaJabon,
@@ -172,10 +194,15 @@ export const useSessionStore = create<SessionStore>((set) => ({
   }),
 
   setElapsedSeconds: (seconds) => set({ elapsedSeconds: seconds }),
-  clearProgress: () => set({ currentStep: '', previousStep: '', elapsedSeconds: 0, infractions: [] }),
+  clearProgress: () => set({
+    frictionEvaluation: null,
+    currentStep: '', previousStep: '', elapsedSeconds: 0, infractions: [],
+    secuenciaFriccionObservadaCompleta: false,
+  }),
   setDetectionDiagnostics: (diagnostics) => set(diagnostics),
   setRetryCount: (intentosReiniciados) => set({ intentosReiniciados }),
   setLastRetryError: (ultimoErrorReinicio) => set({ ultimoErrorReinicio }),
+  setCameraHandsVisible: (cameraHandsVisible) => set({ cameraHandsVisible }),
   setEvaluationMode: (modoEvaluacion) => set({ modoEvaluacion }),
   setSoapCoverage: (coberturaJabon, coberturaJabonCompleta) => set({ coberturaJabon, coberturaJabonCompleta }),
 }));

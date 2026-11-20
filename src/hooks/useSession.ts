@@ -3,6 +3,9 @@ import { useSessionStore } from '@/stores/sessionStore';
 import { useWebSocket } from './useWebSocket';
 import type { Protocolo } from '@/types';
 import { RuntimeEndpointConfig } from '@/lib/RuntimeEndpointConfig';
+import { CameraLinkError, ContinuityCameraService } from '@/lib/ContinuityCameraService';
+import { ContinuityBrowserCameraService, stopTracks } from '@/lib/ContinuityBrowserCameraService';
+import { stationApi } from '@/lib/StationApi';
 
 const API_URL = RuntimeEndpointConfig.apiBaseUrl();
 
@@ -10,9 +13,44 @@ export function useSession() {
   const { startSession, endSession, isActive, sessionId, accessToken, isOwner } = useSessionStore();
   const { connect, disconnect } = useWebSocket();
 
-  const start = useCallback(
-    async (protocolo: Protocolo) => {
+  const linkCamera = useCallback(async (signal: AbortSignal) => {
+    const current = useSessionStore.getState();
+    if (current.isActive && current.sessionId && current.accessToken) {
       try {
+        const message = await ContinuityCameraService.link(current.sessionId, current.accessToken, signal);
+        if (signal.aborted || useSessionStore.getState().sessionId !== current.sessionId) {
+          throw new DOMException('Enlace cancelado', 'AbortError');
+        }
+        return message;
+      } catch (error) {
+        if (!(error instanceof CameraLinkError)) throw error;
+      }
+    }
+    if (signal.aborted || useSessionStore.getState().sessionId !== current.sessionId) {
+      throw new DOMException('Enlace cancelado', 'AbortError');
+    }
+    const result = await ContinuityCameraService.linkLocal(signal);
+    if (signal.aborted || useSessionStore.getState().sessionId !== current.sessionId) {
+      throw new DOMException('Enlace cancelado', 'AbortError');
+    }
+    const { session } = result;
+    startSession(session.sessionId, session.protocolo, session.accessToken, false);
+    connect(session.sessionId, session.accessToken);
+    return result.message;
+  }, [startSession, connect]);
+
+  const start = useCallback(
+    async (protocolo: Protocolo, requestId?: string) => {
+      try {
+        const cloudMode = RuntimeEndpointConfig.isCloudMode();
+
+        if (cloudMode) {
+          const data = await stationApi.createSession(protocolo, requestId ?? crypto.randomUUID());
+          startSession(data.sessionId, data.protocolo, null, true);
+          connect(data.sessionId, null);
+          return null;
+        }
+
         const activeResponse = await fetch(`${API_URL}/api/v1/session/active`);
         let data: { sessionId: string; protocolo: Protocolo; pairingCode?: string; accessToken?: string } | null = null;
 
@@ -72,6 +110,11 @@ export function useSession() {
     connect(paired.sessionId, paired.accessToken);
   }, [startSession, connect]);
 
+  const resume = useCallback((session: { sessionId: string; protocolo: Protocolo }) => {
+    startSession(session.sessionId, session.protocolo, null, true);
+    connect(session.sessionId, null);
+  }, [startSession, connect]);
+
   const stop = useCallback(async () => {
     if (!sessionId) return;
 
@@ -82,11 +125,15 @@ export function useSession() {
     }
 
     try {
-      const response = await fetch(`${API_URL}/api/v1/session/${sessionId}`, {
-        method: 'DELETE',
-        headers: accessToken ? { 'X-Session-Token': accessToken } : {},
-      });
-      if (!response.ok) throw new Error(`No se pudo detener la sesión: HTTP ${response.status}`);
+      if (RuntimeEndpointConfig.isCloudMode()) {
+        await stationApi.stopSession(sessionId);
+      } else {
+        const response = await fetch(`${API_URL}/api/v1/session/${sessionId}`, {
+          method: 'DELETE',
+          headers: accessToken ? { 'X-Session-Token': accessToken } : {},
+        });
+        if (!response.ok) throw new Error(`No se pudo detener la sesión: HTTP ${response.status}`);
+      }
       disconnect();
       endSession();
     } catch (error) {
@@ -95,5 +142,18 @@ export function useSession() {
     }
   }, [sessionId, accessToken, isOwner, disconnect, endSession]);
 
-  return { start, join, stop, isActive, isOwner };
+  const linkCloudCamera = useCallback(async (signal: AbortSignal) => {
+    if (!RuntimeEndpointConfig.isCloudMode()) throw new Error('La captura web solo está disponible en modo cloud.');
+    const stream = await ContinuityBrowserCameraService.open();
+    if (signal.aborted) {
+      stopTracks(stream);
+      throw new DOMException('Enlace cancelado', 'AbortError');
+    }
+    return {
+      stream,
+      message: 'Vista previa local abierta. El enlace WebRTC con el PC RTX requiere una sesión activa.',
+    };
+  }, []);
+
+  return { start, join, resume, stop, disconnect, linkCamera, linkCloudCamera, isActive, isOwner };
 }
