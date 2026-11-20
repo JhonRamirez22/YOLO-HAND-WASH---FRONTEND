@@ -18,15 +18,20 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
   const retries = useSessionStore((s) => s.intentosReiniciados);
   const lastRetryError = useSessionStore((s) => s.ultimoErrorReinicio);
   const mode = useSessionStore((s) => s.modoEvaluacion);
+  const evaluation = useSessionStore((s) => s.frictionEvaluation);
   const soapCoverage = useSessionStore((s) => s.coberturaJabon);
   const soapCoverageComplete = useSessionStore((s) => s.coberturaJabonCompleta);
   const intentionState = useSessionStore((s) => s.estadoIntencion);
   const intentionReason = useSessionStore((s) => s.motivoIntencion);
+  const cameraHandsVisible = useSessionStore((s) => s.cameraHandsVisible);
   const visibleIntentionHands = useSessionStore((s) => s.manosVisiblesIntencion);
   const intentionElapsedMs = useSessionStore((s) => s.tiempoConfirmacionIntencionMs);
   const intentionThresholdMs = useSessionStore((s) => s.umbralConfirmacionIntencionMs);
   const candidateClass = useSessionStore((s) => s.claseCandidata);
   const candidateConfidence = useSessionStore((s) => s.confianzaCandidata);
+  const frictionSequenceObservedComplete = useSessionStore(
+    (s) => s.secuenciaFriccionObservadaCompleta,
+  );
   const steps = mode === 'PROTOCOLO_OMS' ? WHO_STEPS : FRICTION_STEPS;
 
   const infractionSteps = new Set(infractions.map((i) => i.step));
@@ -47,8 +52,14 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
       return summarySequenceObserved ? 'informational' : 'pending';
     }
     if (!isActive) return 'pending';
-    if (step === currentStep) return 'active';
+    if (evaluation) {
+      const status = evaluation.pasos.find((item) => item.paso === step)?.estado;
+      return status === 'VALIDADO' ? 'informational'
+        : status === 'EN_CURSO' || status === 'REQUIERE_REPETICION' ? 'active' : 'pending';
+    }
     if (infractionSteps.has(step)) return 'infraction';
+    if (mode === 'FRICCION_PARCIAL' && frictionSequenceObservedComplete) return 'informational';
+    if (step === currentStep) return 'active';
     const currentIndex = steps.indexOf(currentStep as HandWashStep);
     const stepIndex = steps.indexOf(step);
     if (currentIndex >= 0 && stepIndex >= 0 && stepIndex < currentIndex) {
@@ -90,7 +101,7 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
   const intentionDetail = intentionMessages[intentionReason] ?? intentionReason;
 
   return (
-    <div className="neumorphic rounded-2xl p-5">
+    <div className="neumorphic stepper-panel rounded-lg p-5">
       <div className="mb-5 flex items-center justify-between">
         <h2 className="font-heading text-lg font-semibold text-card-foreground">
           {mode === 'PROTOCOLO_OMS' ? 'Lavado OMS: agua y jabón' : 'Movimientos de fricción'}
@@ -103,19 +114,31 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
         )}
       </div>
 
+      {evaluation && (
+        <p className="step-intention-reason mb-4" role="status">
+          Intento {evaluation.numeroIntento} · {evaluation.estadoIntento === 'PENDIENTE_PERSISTENCIA'
+            ? 'Guardado pendiente; avisa al operador'
+            : evaluation.secuenciaValidada ? 'Seis movimientos validados por Java, sin aprobación clínica'
+            : evaluation.estadoIntento === 'PAUSADO' ? `En pausa. Continúa con ${STEP_LABELS[evaluation.pasoEsperado]}`
+            : evaluation.estadoIntento === 'INTERRUMPIDO' ? 'Intento interrumpido'
+            : `Paso esperado: ${STEP_LABELS[evaluation.pasoEsperado]}`}
+        </p>
+      )}
+
       {isActive && mode !== 'PROTOCOLO_OMS' && (
-        <div className="mb-4 rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5 text-xs" role="status" aria-live="polite">
-          <p className="font-semibold text-card-foreground">Intención: {intentionStatus}</p>
+        <div className="step-intention-panel mb-4" role="status" aria-live="polite">
+          <p className="step-intention-title">Intención: {intentionStatus}</p>
           {intentionDetail && intentionDetail !== intentionStatus && (
-            <p className="mt-1 text-muted-foreground">Motivo: {intentionDetail}</p>
+            <p className="step-intention-reason">Motivo: {intentionDetail}</p>
           )}
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
-            <span>Manos para intención: {visibleIntentionHands}/2</span>
+          <div className="step-intention-facts">
+            <span>YOLO local (último sondeo): {cameraHandsVisible === null ? 'sin dato' : `${cameraHandsVisible}/2`}</span>
+            <span>Evidencia recibida por Java: {visibleIntentionHands}/2</span>
             {intentionThresholdMs > 0 && (
               <span>Confirmación: {intentionElapsedMs}/{intentionThresholdMs} ms</span>
             )}
             {candidateClass && (
-              <span>
+              <span className="step-candidate-label">
                 Candidato: {STEP_LABELS[candidateClass] ?? candidateClass}
                 {candidateConfidence !== null ? ` (${Math.round(candidateConfidence * 100)} %)` : ''}
               </span>
@@ -125,7 +148,7 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
       )}
 
       {isActive && mode === 'PROTOCOLO_OMS' && candidateClass && (
-        <div className="mb-4 text-xs text-muted-foreground" role="status" aria-live="polite">
+        <div className="step-oms-candidate mb-4" role="status" aria-live="polite">
           <p className="font-semibold text-card-foreground">
             Movimiento candidato, sin confirmar: {STEP_LABELS[candidateClass] ?? candidateClass}.
           </p>
@@ -136,29 +159,35 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
         </div>
       )}
 
+      {isActive && mode === 'FRICCION_PARCIAL' && frictionSequenceObservedComplete && (
+        <div className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs text-foreground" role="status" aria-live="polite">
+          Se observaron los seis movimientos de fricción. Esto no verifica el lavado OMS completo ni constituye aprobación clínica.
+        </div>
+      )}
+
       {retries > 0 && isActive && (
-        <div className="mb-4 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground" role="status" aria-live="polite">
+        <div className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground" role="status" aria-live="polite">
           <p className="font-semibold">Intento reiniciado {retries} {retries === 1 ? 'vez' : 'veces'}.</p>
           {lastRetryError && <p className="mt-1">{lastRetryError}</p>}
           <p className="mt-1">Empieza otra vez por {mode === 'PROTOCOLO_OMS' ? 'Mojar las manos' : 'Palmas'}.</p>
         </div>
       )}
 
-      <div className="space-y-1">
+      <div className="step-list space-y-1">
         {steps.map((step, index) => {
           const status = getStepStatus(step);
           return (
-            <div key={step} className="flex items-center gap-3">
+            <div key={step} className={`step-row step-row--${status} flex items-center gap-3`}>
               <div className="relative flex flex-col items-center">
                 <div
                   role="img"
                   aria-label={`${STEP_LABELS[step] ?? step}: ${status === 'completed' ? 'completado y clínicamente validado' : status === 'informational' ? 'registrado como progreso informativo, sin aprobación clínica' : status === 'active' ? 'en curso' : status === 'infraction' ? 'con infracción' : 'pendiente'}`}
                   className={cn(
-                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold transition-all duration-300',
-                    status === 'active' && 'bg-primary text-primary-foreground ring-4 ring-primary/20 scale-110',
+                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold transition-colors duration-150',
+                    status === 'active' && 'bg-primary text-primary-foreground ring-4 ring-primary/20',
                     status === 'completed' && 'bg-success text-success-foreground',
                     status === 'informational' && 'bg-warning text-warning-foreground',
-                    status === 'infraction' && 'bg-destructive text-destructive-foreground animate-pulse-slow',
+                    status === 'infraction' && 'bg-destructive text-destructive-foreground',
                     status === 'pending' && 'bg-muted text-muted-foreground'
                   )}
                 >
@@ -194,8 +223,9 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
                 >
                   {STEP_LABELS[step] ?? step}
                 </span>
+                {status === 'active' && <span className="step-confirmed-label">Estado Java: {evaluation?.pasos.find((item) => item.paso === step)?.estado === 'REQUIERE_REPETICION' ? 'corrección pendiente' : 'en curso'}</span>}
                 {status === 'infraction' && (
-                  <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-bold text-destructive uppercase">
+                  <span className="ml-2 inline-flex items-center gap-1 rounded-sm bg-destructive/10 px-2 py-0.5 text-xs font-bold text-destructive">
                     Infraccion
                   </span>
                 )}
@@ -208,11 +238,11 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
       {mode === 'PROTOCOLO_OMS' && (
         <div className="mt-5 border-t border-border/60 pt-4">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+            <h3 className="text-xs font-bold  text-muted-foreground">
               Predicción visual de espuma por región
             </h3>
             <span className={cn(
-              'rounded-full px-2 py-1 text-[10px] font-bold',
+              'rounded-full px-2 py-1 text-xs font-bold',
               'bg-warning/10 text-warning'
             )}>
               {soapCoverageComplete
@@ -224,7 +254,7 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
             {Object.entries(SOAP_REGION_LABELS).map(([region, label]) => {
               const state: SoapEvidence = soapCoverage[region] ?? 'NO_VERIFICABLE';
               return (
-                <div key={region} className="flex items-center justify-between gap-2 rounded-lg bg-muted/30 px-2 py-1.5 text-[10px]">
+                <div key={region} className="flex items-center justify-between gap-2 rounded-lg bg-muted/30 px-2 py-1.5 text-xs">
                   <span className="text-muted-foreground">{label}</span>
                   <span className={cn(
                     'shrink-0 font-bold text-muted-foreground'
@@ -239,7 +269,7 @@ export function StepStepper({ deploymentStatus }: StepStepperProps) {
       )}
 
       {!isActive && !summary && (
-        <div className="mt-5 rounded-xl bg-muted/50 px-4 py-3 text-center text-xs font-medium text-muted-foreground">
+        <div className="mt-5 rounded-lg bg-muted/50 px-4 py-3 text-center text-xs font-medium text-muted-foreground">
           Inicie una sesion para ver el progreso
         </div>
       )}

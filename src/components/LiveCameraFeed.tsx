@@ -1,8 +1,13 @@
-import { useEffect, useState } from 'react';
-import { LoaderCircle, ScanEye, Wifi, WifiOff } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { LoaderCircle, ScanEye, Video, VideoOff, Wifi, WifiOff } from 'lucide-react';
 import { useSessionStore } from '@/stores/sessionStore';
 import { STEP_LABELS } from '@/types';
 import { RuntimeEndpointConfig } from '@/lib/RuntimeEndpointConfig';
+import type { DeploymentStatus } from '@/lib/DeploymentStatusService';
+import { ProcessingPath } from './ProcessingPath';
+import { useSession } from '@/hooks/useSession';
+import { stopTracks } from '@/lib/ContinuityBrowserCameraService';
+import type { CameraRelayState, ProducerTelemetry } from '@/lib/BrowserRtcCameraRelay';
 
 type StreamStatus = 'idle' | 'connecting' | 'live' | 'offline';
 type CameraHealth = 'connected' | 'reconnecting' | 'unknown';
@@ -36,28 +41,131 @@ const STREAM_URL = RuntimeEndpointConfig.cameraStreamUrl();
 const CAMERA_HEALTH_TIMEOUT_MS = 2_000;
 const CAMERA_HEALTH_POLL_MS = 1_500;
 
-export function LiveCameraFeed() {
+interface LiveCameraFeedProps {
+  backendStatus?: DeploymentStatus;
+  backendLoading?: boolean;
+  browserStream?: MediaStream | null;
+  onToggleBrowserCamera?: () => Promise<boolean>;
+  relayStatus?: CameraRelayState | 'idle';
+  producerTelemetry?: ProducerTelemetry | null;
+  passive?: boolean;
+}
+
+export function LiveCameraFeed({ backendStatus, backendLoading = true, browserStream: controlledStream,
+  onToggleBrowserCamera, relayStatus = 'idle', producerTelemetry = null, passive = false }: LiveCameraFeedProps) {
   const [status, setStatus] = useState<StreamStatus>('idle');
   const [cameraHealth, setCameraHealth] = useState<CameraHealth>('unknown');
   const [handPresence, setHandPresence] = useState<HandPresence | null>(null);
   const [retry, setRetry] = useState(0);
+  const [linking, setLinking] = useState(false);
+  const [linkMessage, setLinkMessage] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState(false);
+  const [localBrowserStream, setLocalBrowserStream] = useState<MediaStream | null>(null);
+  const browserStream = controlledStream === undefined ? localBrowserStream : controlledStream;
+  const linkRequest = useRef<AbortController | null>(null);
+  const videoElement = useRef<HTMLVideoElement | null>(null);
+  const cloudMode = RuntimeEndpointConfig.isCloudMode();
+  const { linkCamera, linkCloudCamera } = useSession();
   const sessionId = useSessionStore((state) => state.sessionId);
   const currentStep = useSessionStore((state) => state.currentStep);
+  const candidateClass = useSessionStore((state) => state.claseCandidata);
+  const candidateConfidence = useSessionStore((state) => state.confianzaCandidata);
   const isActive = useSessionStore((state) => state.isActive);
   const summary = useSessionStore((state) => state.summary);
   const retries = useSessionStore((state) => state.intentosReiniciados);
   const mode = useSessionStore((state) => state.modoEvaluacion);
   const intentionState = useSessionStore((state) => state.estadoIntencion);
+  const setCameraHandsVisible = useSessionStore((state) => state.setCameraHandsVisible);
+
+  const linkIphone = async () => {
+    if (linkRequest.current) return;
+    const controller = new AbortController();
+    linkRequest.current = controller;
+    setLinking(true);
+    setLinkError(false);
+    setLinkMessage('Buscando cámara de Continuidad…');
+    try {
+      if (cloudMode) {
+        if (onToggleBrowserCamera) {
+          const opened = await onToggleBrowserCamera();
+          setStatus(opened ? 'connecting' : 'idle');
+          setLinkMessage(opened
+            ? isActive ? 'Cámara abierta; negociando WebRTC con el PC RTX.'
+              : 'Vista previa lista. Inicia detección para enlazarla al PC RTX.'
+            : 'Cámara desconectada.');
+          setLinkError(false);
+        } else if (browserStream) {
+          stopTracks(browserStream);
+          setLocalBrowserStream(null);
+          setStatus('idle');
+          setLinkMessage('Vista previa local desconectada.');
+          setLinkError(false);
+        } else {
+          const result = await linkCloudCamera(controller.signal);
+          if (controller.signal.aborted) {
+            stopTracks(result.stream);
+            return;
+          }
+          setLocalBrowserStream(result.stream);
+          setStatus('connecting');
+          setLinkMessage(result.message);
+        }
+      } else {
+        const message = await linkCamera(controller.signal);
+        if (controller.signal.aborted) return;
+        setLinkMessage(message);
+        // Linking an already healthy camera must not interrupt its stream.
+        if (status === 'offline') {
+          setStatus('connecting');
+          setRetry((count) => count + 1);
+        }
+      }
+    } catch (error) {
+      if (linkRequest.current !== controller) return;
+      setLinkError(true);
+      setLinkMessage(error instanceof Error && error.name !== 'AbortError'
+        ? error.message : 'No responde el capturador. Comprueba que el arranque local sigue activo.');
+    } finally {
+      if (linkRequest.current === controller) {
+        linkRequest.current = null;
+        setLinking(false);
+      }
+    }
+  };
+
+  useEffect(() => () => {
+    linkRequest.current?.abort();
+    linkRequest.current = null;
+  }, []);
 
   useEffect(() => {
-    setStatus(sessionId ? 'connecting' : 'idle');
+    const video = videoElement.current;
+    if (!video || !browserStream) return;
+    video.srcObject = browserStream;
+    void video.play().catch(() => setLinkMessage('El navegador bloqueó la vista previa; vuelve a pulsar Enlazar iPhone.'));
+    return () => { video.srcObject = null; };
+  }, [browserStream]);
+
+  useEffect(() => {
+    if (cloudMode || isActive || !browserStream) return;
+    stopTracks(browserStream);
+    setLocalBrowserStream(null);
+  }, [isActive, browserStream, cloudMode]);
+
+  useEffect(() => () => {
+    if (controlledStream === undefined) stopTracks(localBrowserStream);
+  }, [controlledStream, localBrowserStream]);
+
+  useEffect(() => {
+    setStatus(browserStream ? 'live' : sessionId ? 'connecting' : 'idle');
     setCameraHealth('unknown');
     setHandPresence(null);
+    setCameraHandsVisible(null);
     setRetry(0);
-  }, [sessionId]);
+  }, [sessionId, browserStream, setCameraHandsVisible]);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || cloudMode) return;
 
     const healthUrl = new URL('/health', STREAM_URL);
     let active = true;
@@ -86,14 +194,18 @@ export function LiveCameraFeed() {
         if (health.sessionId !== sessionId) {
           setCameraHealth('unknown');
           setHandPresence(null);
+          setCameraHandsVisible(null);
           return;
         }
         setCameraHealth(health.camera === 'connected' ? 'connected' : 'reconnecting');
-        setHandPresence(parseHandPresence(health.handPresence));
+        const presence = parseHandPresence(health.handPresence);
+        setHandPresence(presence);
+        setCameraHandsVisible(presence?.handsVisible ?? null);
       } catch {
         if (active && (!requestController.signal.aborted || timedOut)) {
           setCameraHealth('unknown');
           setHandPresence(null);
+          setCameraHandsVisible(null);
         }
       } finally {
         window.clearTimeout(requestTimeout);
@@ -108,18 +220,18 @@ export function LiveCameraFeed() {
       window.clearTimeout(requestTimeout);
       window.clearTimeout(timeout);
     };
-  }, [sessionId]);
+  }, [sessionId, setCameraHandsVisible, cloudMode]);
 
   useEffect(() => {
-    if (!sessionId || status !== 'offline') return;
+    if (!sessionId || cloudMode || status !== 'offline') return;
     const timeout = window.setTimeout(() => {
       setStatus('connecting');
       setRetry((count) => count + 1);
     }, 2500);
     return () => window.clearTimeout(timeout);
-  }, [sessionId, status]);
+  }, [sessionId, status, cloudMode]);
 
-  const streamUrl = sessionId
+  const streamUrl = !cloudMode && sessionId
     ? (() => {
       const url = new URL(STREAM_URL, window.location.href);
       url.searchParams.set('sessionId', sessionId);
@@ -139,67 +251,130 @@ export function LiveCameraFeed() {
             + `${(handPresence.warmupRequiredMs / 1000).toFixed(1)} s`;
 
   return (
-    <section className="neumorphic overflow-hidden rounded-2xl" aria-label="Video en vivo del lavado">
-      <header className="flex items-center gap-2 border-b border-border/50 bg-muted/30 px-5 py-3">
-        <ScanEye className="h-4 w-4 text-primary" aria-hidden="true" />
-        <h2 className="font-heading text-sm font-semibold text-card-foreground">
-          Cámara y detección YOLO
-        </h2>
-        <div className="ml-auto flex items-center gap-1.5" role="status" aria-live="polite">
-          {status === 'live' && cameraHealth === 'connected' ? (
-            <><Wifi className="h-4 w-4 text-success" aria-hidden="true" /><span className="text-[10px] font-bold uppercase tracking-wider text-success">En vivo</span></>
+    <section className={`panel camera-panel ${cloudMode ? 'has-processing-path' : ''}`} aria-label="Video en vivo del lavado">
+      <header className="panel-header">
+        <div className="panel-heading-icon"><ScanEye size={17} aria-hidden="true" /></div>
+        <h2>{cloudMode ? 'Cámara de Continuidad' : 'Cámara y detección YOLO'}</h2>
+        <div className="camera-state" role="status" aria-live="polite">
+          {passive && status === 'live' ? (
+            <><Wifi className="h-4 w-4 text-success" aria-hidden="true" /><span>Cámara conectada</span></>
+          ) : passive && status === 'connecting' ? (
+            <><LoaderCircle className="h-4 w-4 animate-spin text-warning" aria-hidden="true" /><span>Esperando cámara</span></>
+          ) : passive && status === 'offline' ? (
+            <><WifiOff className="h-4 w-4 text-warning" aria-hidden="true" /><span>Cámara sin señal</span></>
+          ) : cloudMode && status === 'live' ? (
+            <><Wifi className="h-4 w-4 text-warning" aria-hidden="true" /><span>Vista previa local</span></>
+          ) : status === 'live' && cameraHealth === 'connected' ? (
+            <><Wifi className="h-4 w-4 text-success" aria-hidden="true" /><span>En vivo</span></>
           ) : status === 'live' && cameraHealth === 'reconnecting' ? (
-            <><WifiOff className="h-4 w-4 text-warning" aria-hidden="true" /><span className="text-[10px] font-bold uppercase tracking-wider text-warning">Cámara reconectando</span></>
+            <><WifiOff className="h-4 w-4 text-warning" aria-hidden="true" /><span>Cámara reconectando</span></>
           ) : status === 'live' ? (
-            <><Wifi className="h-4 w-4 text-warning" aria-hidden="true" /><span className="text-[10px] font-bold uppercase tracking-wider text-warning">Stream conectado · cámara sin verificar</span></>
+            <><Wifi className="h-4 w-4 text-warning" aria-hidden="true" /><span>Stream conectado · cámara sin verificar</span></>
           ) : status === 'idle' ? (
-            <><WifiOff className="h-4 w-4 text-muted-foreground" aria-hidden="true" /><span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Sin sesión</span></>
+            <><WifiOff className="h-4 w-4 text-muted-foreground" aria-hidden="true" /><span>Sin cámara</span></>
           ) : status === 'connecting' ? (
-            <><LoaderCircle className="h-4 w-4 animate-spin text-warning" aria-hidden="true" /><span className="text-[10px] font-bold uppercase tracking-wider text-warning">Conectando</span></>
+            <><LoaderCircle className="h-4 w-4 animate-spin text-warning" aria-hidden="true" /><span>Conectando</span></>
           ) : (
-            <><WifiOff className="h-4 w-4 text-muted-foreground" aria-hidden="true" /><span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Sin señal</span></>
+            <><WifiOff className="h-4 w-4 text-muted-foreground" aria-hidden="true" /><span>Sin señal</span></>
           )}
         </div>
       </header>
 
-      <div className="relative aspect-video bg-[#07151c]">
+      {!passive && <div className="camera-toolbar">
+        <button type="button" onClick={() => void linkIphone()}
+          disabled={linking}
+          className="button-primary">
+          {linking ? <LoaderCircle className="animate-spin" size={17} aria-hidden="true" /> : (
+            <span className="t-icon-swap" data-state={cloudMode && browserStream ? 'b' : 'a'} aria-hidden="true">
+              <Video className="t-icon" data-icon="a" size={17} />
+              <VideoOff className="t-icon" data-icon="b" size={17} />
+            </span>
+          )}
+          <span>{linking ? 'Enlazando…' : cloudMode && browserStream ? 'Desconectar iPhone' : 'Enlazar iPhone'}</span>
+        </button>
+        <span className={`camera-message ${linkError ? 'is-error' : ''}`}
+          role={linkError ? 'alert' : 'status'}>
+          {linkMessage ?? (sessionId ? 'iPhone cercano, con Cámara de Continuidad activada.'
+            : 'Selecciona la cámara principal del iPhone desde este navegador.')}
+        </span>
+        {cloudMode && <span className="camera-limit-note">
+          {producerTelemetry?.activeModelsReady && producerTelemetry.javaTransport === 'connected'
+            ? `YOLO en RTX · ${producerTelemetry.inferenceFps.toFixed(1)} fps · observaciones enviadas a Java; pasos confirmados abajo`
+            : relayStatus === 'connected' ? 'Video WebRTC conectado al PC · esperando estado de inferencia'
+              : relayStatus === 'failed' ? 'No se conectó el PC RTX; revisa que el productor esté activo en la misma red'
+                : browserStream ? isActive ? 'Cámara lista · esperando conexión WebRTC con el PC RTX'
+                  : 'Vista previa local · inicia la sesión para enviar video al PC RTX'
+                  : 'Sin grabación · el PC RTX debe estar activo para recibir video'}
+        </span>}
+      </div>}
+
+      {cloudMode && !passive && <ProcessingPath
+        previewReady={Boolean(browserStream)}
+        backendStatus={backendStatus}
+        backendLoading={backendLoading}
+        relayStatus={relayStatus}
+        producerTelemetry={producerTelemetry}
+        candidateClass={isActive ? candidateClass : ''}
+        candidateConfidence={isActive ? candidateConfidence : null}
+        javaStep={currentStep || null}
+      />}
+
+      <div className="camera-stage">
+        {cloudMode && (
+          <video
+            ref={videoElement}
+            autoPlay
+            playsInline
+            muted
+            aria-label="Vista de Continuity Camera; WebRTC transmite video directo al PC RTX cuando el enlace está activo"
+            className={`camera-video ${browserStream ? 'is-visible' : ''}`}
+            onLoadedMetadata={() => setStatus('live')}
+            onError={() => { setStatus('offline'); setLinkError(true); }}
+          />
+        )}
         {streamUrl && (
           <img
             key={`${sessionId}:${retry}`}
             src={streamUrl}
             alt="Video en vivo de las manos con las detecciones del modelo YOLO superpuestas"
-            className={`h-full w-full object-contain transition-opacity duration-300 ${status === 'live' ? 'opacity-100' : 'opacity-0'}`}
+            className={`camera-video ${status === 'live' ? 'is-visible' : ''}`}
             onLoad={() => setStatus('live')}
             onError={() => setStatus('offline')}
           />
         )}
 
         {status !== 'live' && (
-          <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
-            <div className="max-w-sm">
-              <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-background/10 text-background">
-                {status === 'connecting' ? <LoaderCircle className="h-5 w-5 animate-spin" /> : <WifiOff className="h-5 w-5" />}
+          <div className="camera-empty-state">
+            <div className="camera-empty-content">
+              <div className="camera-empty-icon">
+                {status === 'connecting' ? <LoaderCircle className="animate-spin" size={20} /> : <WifiOff size={20} />}
               </div>
-              <p className="text-sm font-semibold text-white">
-                {status === 'idle' ? 'Inicia o vincula una sesión'
+              <p className="camera-empty-title">
+                {status === 'idle' ? passive ? 'Esperando cámara' : 'Enlaza el iPhone para comenzar'
                   : status === 'connecting' ? 'Esperando la cámara del iPhone'
                     : 'No llega el video de esta sesión'}
               </p>
-              <p className="mt-1 text-xs leading-relaxed text-white/75">
+              {!passive && <p className="camera-empty-copy">
                 {status === 'idle'
-                  ? 'El video se habilita al vincular el dashboard con el capturador YOLO.'
-                  : 'Comprueba que el iPhone esté disponible y que YOLO use el código de vinculación de esta misma sesión.'}
-              </p>
+                  ? 'No necesitas códigos ni una app en el iPhone.'
+                  : 'Comprueba que el iPhone esté disponible y que el launcher siga activo. Pulsa Enlazar iPhone para reintentar.'}
+              </p>}
             </div>
           </div>
         )}
 
-        <div className="absolute bottom-3 left-3 rounded-lg bg-black/65 px-3 py-2 text-xs text-white backdrop-blur-sm">
-          {isActive
-            ? currentStep ? `Movimiento actual: ${STEP_LABELS[currentStep as keyof typeof STEP_LABELS] ?? currentStep}` : retries > 0 ? `Intento reiniciado · vuelve a empezar por ${mode === 'PROTOCOLO_OMS' ? 'mojar las manos' : 'Palmas'}` : 'Sesión activa · esperando el primer paso'
+        <div className="camera-caption">
+          {passive ? isActive
+            ? currentStep ? `Java confirma: ${STEP_LABELS[currentStep as keyof typeof STEP_LABELS] ?? currentStep}`
+              : 'Evaluación activa · esperando evidencia de manos'
+            : summary ? 'Sesión finalizada' : 'Esperando al operador'
+            : null}
+          {!passive && (isActive
+            ? currentStep ? `Movimiento actual: ${STEP_LABELS[currentStep as keyof typeof STEP_LABELS] ?? currentStep}` : retries > 0 ? `Intento reiniciado · vuelve a empezar por ${mode === 'PROTOCOLO_OMS' ? 'mojar las manos' : 'Palmas'}` : cloudMode && relayStatus !== 'connected' ? 'Sesión Java activa · esperando cámara y PC RTX' : 'Sesión activa · esperando el primer paso'
             : summary ? 'Sesión finalizada · consulta el resumen'
-              : 'Inicia o vincula una sesión para evaluar el lavado'}
-          {isActive && mode !== 'PROTOCOLO_OMS' && handPresenceLabel && (
+              : cloudMode ? browserStream ? 'Vista previa local · el enlace WebRTC se activa al iniciar la sesión' : 'Enlaza el iPhone para comenzar'
+                : 'Enlaza el iPhone para evaluar los movimientos')}
+          {!passive && isActive && mode !== 'PROTOCOLO_OMS' && handPresenceLabel && (
             <p className="mt-1 text-white/80" role="status" aria-live="polite">{handPresenceLabel}</p>
           )}
         </div>
